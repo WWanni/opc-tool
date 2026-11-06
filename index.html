@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPC 시뮬레이션 도구</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --line:#d9dde3; --text:#1d2129; --muted:#5f6670; --accent:#1f5fbf; --miss:#d23b3b; --extra:#2f58c9; --match:#8ea6c8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
+  header { background:var(--panel); border-bottom:1px solid var(--line); padding:12px 20px; }
+  header h1 { margin:0 0 4px; font-size:18px; font-weight:600; }
+  header p { margin:0; color:var(--muted); font-size:13px; }
+  main { padding:16px 20px; max-width:1500px; margin:0 auto; }
+  .bar { display:flex; flex-wrap:wrap; gap:14px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:14px; }
+  .bar label { color:var(--muted); margin-right:4px; }
+  select, button, input[type=number] { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:4px; background:#fff; }
+  button { cursor:pointer; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  .cond { font-family:Consolas,monospace; font-size:12.5px; color:var(--muted); }
+  .panels { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; }
+  .panel h3 { margin:0 0 6px; font-size:13.5px; font-weight:600; }
+  .panel .sub { color:var(--muted); font-size:12px; margin-bottom:6px; min-height:16px; }
+  canvas.view { width:100%; image-rendering:pixelated; border:1px solid var(--line); background:#000; display:block; }
+  #maskCanvas { cursor:crosshair; }
+  .legend { display:flex; gap:12px; font-size:12px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
+  .legend i { display:inline-block; width:12px; height:12px; vertical-align:-2px; margin-right:4px; border:1px solid #999; }
+  .edit { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; font-size:12.5px; }
+  .edit .seg button { padding:3px 8px; } .edit .seg button.on { background:#e6eefc; border-color:var(--accent); color:var(--accent); }
+  .grid2 { display:grid; grid-template-columns:1.2fr 1fr; gap:12px; margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  td.good { color:#1b7a3a; } td.bad { color:var(--miss); }
+  .small { font-size:12px; color:var(--muted); }
+  .cbar { height:10px; background:linear-gradient(to right,#000004,#3b0f70,#8c2981,#de4968,#fe9f6d,#fcfdbf); border:1px solid var(--line); margin-top:4px; }
+  .cbarlab { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+  details { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:14px; }
+  summary { cursor:pointer; font-weight:600; }
+  .figs { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
+  .figs img { width:100%; border:1px solid var(--line); }
+  footer { color:var(--muted); font-size:12px; padding:10px 20px 30px; max-width:1500px; margin:0 auto; }
+  @media (max-width:1100px) { .panels { grid-template-columns:repeat(2,1fr);} .grid2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>OPC 시뮬레이션 도구: FinFET standard cell Metal1 (INV_X1, NAND2_X4)</h1>
+  <p>coherent scalar 결상 + constant threshold resist. 마스크 → FFT → 원형 pupil (NA/λ) → |E|² → 임계값 → 현상 패턴. 계산은 이 페이지 안에서 수행된다 (python 구현과 세기 오차 1e-6 이내 일치 확인).</p>
+</header>
+<main>
+  <div class="bar">
+    <span><label>레이아웃</label><select id="layoutSel"><option value="INV_X1">INV_X1 (63 × 189 nm)</option><option value="NAND2_X4">NAND2_X4 (157.5 × 189 nm)</option></select></span>
+    <span><label>마스크</label><select id="maskSel"><option value="baseline">OPC 전 (목표 = 마스크)</option><option value="ga">OPC 후: GA (gradient-free)</option><option value="gdA">OPC 후: GD-A (gradient, edge 대역)</option></select></span>
+    <span class="cond" id="condText"></span>
+    <span style="flex:1"></span>
+    <button id="btnJson">조건 + 결과 JSON 저장</button>
+    <button id="btnPng">그림 PNG 저장</button>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>1. 목표 패턴</h3><div class="sub" id="subTarget"></div>
+      <canvas id="targetCanvas" class="view"></canvas>
+      <div class="legend"><span><i style="background:#fff"></i>Metal1 (목표)</span><span><i style="background:#000"></i>배경</span></div>
+    </div>
+    <div class="panel">
+      <h3>2. 마스크 (클릭/드래그로 수정)</h3><div class="sub" id="subMask"></div>
+      <canvas id="maskCanvas" class="view"></canvas>
+      <div class="legend"><span><i style="background:#fff"></i>투과 (개구)</span><span><i style="background:#000"></i>차광</span><span><i style="background:#3a86ff"></i>목표 윤곽</span></div>
+      <div class="edit">
+        <span class="seg">모드 <button id="modeAdd" class="on">개구 추가</button><button id="modeDel">개구 제거</button></span>
+        <span class="seg">브러시 <button data-b="1" class="on">1 px</button><button data-b="2">2 px</button><button data-b="4">4 px</button></span>
+        <button id="btnReset">선택한 마스크로 초기화</button>
+        <span id="editInfo" class="small"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>3. 노광 분포 I(x, y)</h3><div class="sub" id="subAerial"></div>
+      <canvas id="aerialCanvas" class="view"></canvas>
+      <div class="cbar"></div><div class="cbarlab"><span>0</span><span>I_th = <span id="ithLab"></span></span><span>1 (open-frame)</span></div>
+      <div class="legend"><span>흰 윤곽: I = I_th 등고선 (현상 경계)</span></div>
+    </div>
+    <div class="panel">
+      <h3>4. 현상 패턴 vs 목표</h3><div class="sub" id="subDev"></div>
+      <canvas id="devCanvas" class="view"></canvas>
+      <div class="legend"><span><i style="background:var(--match)"></i>일치</span><span><i style="background:var(--miss)"></i>missing (목표에만)</span><span><i style="background:var(--extra)"></i>extra (결과에만)</span></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h3>5. 정량 비교 (현재 마스크 vs OPC 전)</h3>
+      <table id="metricTable"></table>
+      <p class="small">IoU = |현상 ∩ 목표| / |현상 ∪ 목표|. 면적 단위 nm² (pixel 0.875 nm). cut-line CD는 지정 행/열에서 현상된 구간의 길이, 설계값 대비 오차.</p>
+    </div>
+    <div class="panel">
+      <h3>cut-line CD</h3>
+      <table id="cdTable"></table>
+    </div>
+  </div>
+
+  <details>
+    <summary>FDTD (Lumerical) 검증: thin mask 모델 vs fullwave (투과형 이상화 마스크, 흡수체 60 nm, n 0.9506, k 0.13, 4x, TE/TM 평균)</summary>
+    <p class="small">마스크 직후 근접장만 FDTD로 바꾸고 결상/현상은 같은 코드로 처리. 세기 상관은 노광 분포 모양의 일치, 세기비는 FDTD/thin 총 세기(개구 edge pixel 투과 손실), 현상 일치는 두 모델의 현상 패턴 IoU (세기비 보정 후).</p>
+    <table id="fdtdTable"></table>
+    <div class="figs" id="fdtdFigs"></div>
+  </details>
+</main>
+<footer>
+  조건: λ 13.5 nm (EUV), NA 0.55, coherent 조명, 격자 0.875 nm (λ_layout/4), positive CTR, I_th 0.3709 (기준 line-space 주기 31.5 nm 선폭 10.5 nm에서 현상 선폭 = 설계 선폭), 고립 패턴 + zero padding, 평가 영역 셀 + 사방 28 nm.
+  OPC 전후 비교에서 격자, 조명, 노광 조건, 임계값은 동일하게 고정된다. 최적화(GA, GD)는 서버에서 수행된 결과를 불러온다.
+</footer>
+
+<script src="data.js"></script>
+<script src="forward.js"></script>
+<script>
+(function () {
+  const D = window.OPC_DATA, C = D.config, cfg = { lambda_nm: C.lambda_nm, NA: C.NA, pixel_nm: C.pixel_nm, I_th: C.I_th };
+  const $ = id => document.getElementById(id);
+  const SCALE = 2;
+  let layout = "INV_X1", maskName = "baseline", H, W, Zt, M, I, Z, baseM, baseMetrics, mode = "add", brush = 1, edited = 0;
+
+  function unpack(b64, n) { const s = atob(b64), out = new Uint8Array(n); for (let i = 0; i < n; i++) out[i] = (s.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1; return out; }
+
+  // ---------- 렌더링 ----------
+  function setup(cv) { cv.width = W * SCALE; cv.height = H * SCALE; return cv.getContext("2d"); }
+  function drawBinary(cv, A, outline) {
+    const ctx = setup(cv), img = ctx.createImageData(W * SCALE, H * SCALE), d = img.data;
+    for (let y = 0; y < H * SCALE; y++) for (let x = 0; x < W * SCALE; x++) { const v = A[(y / SCALE | 0) * W + (x / SCALE | 0)] ? 255 : 0, o = (y * W * SCALE + x) * 4; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
+    ctx.putImageData(img, 0, 0);
+    if (outline) drawOutline(ctx, outline, "#3a86ff");
+  }
+  function drawOutline(ctx, A, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath();
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const v = A[y * W + x]; if (!v) continue;
+      if (x === 0 || !A[y * W + x - 1]) { ctx.moveTo(x * SCALE + .5, y * SCALE); ctx.lineTo(x * SCALE + .5, (y + 1) * SCALE); }
+      if (x === W - 1 || !A[y * W + x + 1]) { ctx.moveTo((x + 1) * SCALE - .5, y * SCALE); ctx.lineTo((x + 1) * SCALE - .5, (y + 1) * SCALE); }
+      if (y === 0 || !A[(y - 1) * W + x]) { ctx.moveTo(x * SCALE, y * SCALE + .5); ctx.lineTo((x + 1) * SCALE, y * SCALE + .5); }
+      if (y === H - 1 || !A[(y + 1) * W + x]) { ctx.moveTo(x * SCALE, (y + 1) * SCALE - .5); ctx.lineTo((x + 1) * SCALE, (y + 1) * SCALE - .5); }
+    }
+    ctx.stroke();
+  }
+  const MAG = [[0,0,4],[59,15,112],[140,41,129],[222,73,104],[254,159,109],[252,253,191]];
+  function cmap(v) { v = Math.max(0, Math.min(1, v)); const t = v * (MAG.length - 1), i = Math.min(MAG.length - 2, t | 0), f = t - i; return [0,1,2].map(k => MAG[i][k] + (MAG[i+1][k] - MAG[i][k]) * f); }
+  function drawAerial(cv, I) {
+    const ctx = setup(cv), img = ctx.createImageData(W * SCALE, H * SCALE), d = img.data;
+    for (let y = 0; y < H * SCALE; y++) for (let x = 0; x < W * SCALE; x++) { const c = cmap(I[(y / SCALE | 0) * W + (x / SCALE | 0)]), o = (y * W * SCALE + x) * 4; d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255; }
+    ctx.putImageData(img, 0, 0); drawOutline(ctx, Z, "rgba(255,255,255,0.9)");
+  }
+  function drawDev(cv, Z, Zt) {
+    const ctx = setup(cv), img = ctx.createImageData(W * SCALE, H * SCALE), d = img.data;
+    for (let y = 0; y < H * SCALE; y++) for (let x = 0; x < W * SCALE; x++) {
+      const i = (y / SCALE | 0) * W + (x / SCALE | 0), a = Z[i], b = Zt[i], o = (y * W * SCALE + x) * 4;
+      let c = [255, 255, 255]; if (a && b) c = [142, 166, 200]; else if (b) c = [210, 59, 59]; else if (a) c = [47, 88, 201];
+      d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // ---------- 계산과 표 ----------
+  function compute() {
+    const t0 = performance.now(); I = OPC.aerialImage(M, H, W, cfg); Z = OPC.develop(I, cfg.I_th); const ms = performance.now() - t0;
+    const m = OPC.compare(Z, Zt, cfg.pixel_nm);
+    drawBinary($("maskCanvas"), M, Zt); drawAerial($("aerialCanvas"), I); drawDev($("devCanvas"), Z, Zt);
+    let maxI = 0; for (let i = 0; i < I.length; i++) if (I[i] > maxI) maxI = I[i];
+    let nOpen = 0; for (let i = 0; i < M.length; i++) nOpen += M[i];
+    $("subMask").textContent = `${maskName === "custom" ? "사용자 편집" : maskName} | 개구 ${(nOpen * cfg.pixel_nm ** 2).toFixed(0)} nm² | 수정 ${edited} px`;
+    $("subAerial").textContent = `최대 세기 ${maxI.toFixed(3)} | 계산 ${ms.toFixed(0)} ms`;
+    $("subDev").textContent = `IoU ${m.iou.toFixed(4)} | 불일치 ${m.mismatch_nm2.toFixed(0)} nm²`;
+    renderMetrics(m); renderCD();
+    return m;
+  }
+  function pct(a, b) { return b ? ((a - b) / b * 100).toFixed(1) + "%" : "-"; }
+  function renderMetrics(m) {
+    const b = baseMetrics, rows = [
+      ["IoU", m.iou.toFixed(4), b.iou.toFixed(4), (m.iou - b.iou >= 0 ? "+" : "") + (m.iou - b.iou).toFixed(4), m.iou >= b.iou],
+      ["불일치 면적 (nm²)", m.mismatch_nm2.toFixed(1), b.mismatch_nm2.toFixed(1), pct(m.mismatch_nm2, b.mismatch_nm2), m.mismatch_nm2 <= b.mismatch_nm2],
+      ["missing (nm²)", m.missing_nm2.toFixed(1), b.missing_nm2.toFixed(1), pct(m.missing_nm2, b.missing_nm2), m.missing_nm2 <= b.missing_nm2],
+      ["extra (nm²)", m.extra_nm2.toFixed(1), b.extra_nm2.toFixed(1), pct(m.extra_nm2, b.extra_nm2), m.extra_nm2 <= b.extra_nm2],
+    ];
+    $("metricTable").innerHTML = `<tr><th>지표</th><th>현재 마스크</th><th>OPC 전</th><th>변화</th></tr>` +
+      rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td class="${r[4] ? "good" : "bad"}">${r[3]}</td></tr>`).join("") +
+      `<tr><td>목표 면적 (nm²)</td><td colspan="3">${m.target_nm2.toFixed(1)}</td></tr>`;
+  }
+  function cd(Zarr, c) {
+    const prof = i => c.axis === "x" ? Zarr[c.index * W + i] : Zarr[i * W + c.index], n = c.axis === "x" ? W : H;
+    if (!prof(c.center)) return 0; let a = c.center, b = c.center;
+    while (a - 1 >= 0 && prof(a - 1)) a--; while (b + 1 < n && prof(b + 1)) b++;
+    return (b - a + 1) * cfg.pixel_nm;
+  }
+  function renderCD() {
+    const cl = D.layouts[layout].cutlines, Zb = baseZ;
+    $("cdTable").innerHTML = `<tr><th>위치</th><th>설계</th><th>현재</th><th>오차</th><th>OPC 전 오차</th></tr>` +
+      cl.map(c => { const v = cd(Z, c), vb = cd(Zb, c); return `<tr><td>${c.label}</td><td>${c.design_nm.toFixed(1)}</td><td>${v.toFixed(2)}</td><td class="${Math.abs(v - c.design_nm) <= Math.abs(vb - c.design_nm) ? "good" : "bad"}">${(v - c.design_nm >= 0 ? "+" : "") + (v - c.design_nm).toFixed(2)}</td><td>${(vb - c.design_nm >= 0 ? "+" : "") + (vb - c.design_nm).toFixed(2)}</td></tr>`; }).join("");
+  }
+  let baseZ;
+  function loadLayout() {
+    const L = D.layouts[layout]; H = L.H; W = L.W; Zt = unpack(L.target_b64, H * W);
+    baseM = Zt; const Ib = OPC.aerialImage(baseM, H, W, cfg); baseZ = OPC.develop(Ib, cfg.I_th); baseMetrics = OPC.compare(baseZ, Zt, cfg.pixel_nm);
+    drawBinary($("targetCanvas"), Zt);
+    $("subTarget").textContent = `${layout} | ${(W * cfg.pixel_nm).toFixed(1)} × ${(H * cfg.pixel_nm).toFixed(1)} nm (여백 포함) | ${L.rects_lambda.length} 직사각형`;
+    renderFDTD();
+    loadMask();
+  }
+  function loadMask() { const L = D.layouts[layout]; M = unpack(L.masks_b64[maskName], H * W); edited = 0; $("editInfo").textContent = ""; compute(); }
+
+  function renderFDTD() {
+    const f = D.layouts[layout].fdtd, names = { baseline: "OPC 전", ga: "GA", gdA: "GD-A" };
+    $("fdtdTable").innerHTML = `<tr><th>마스크</th><th>세기 상관</th><th>세기비 FDTD/thin</th><th>edge pixel 비율</th><th>현상 일치 IoU (보정 없음 / 보정)</th><th>목표 IoU thin</th><th>목표 IoU FDTD (보정)</th></tr>` +
+      ["baseline", "ga", "gdA"].map(k => { const d = f[k].diff; return `<tr><td>${names[k]}</td><td>${d.corr_I.toFixed(4)}</td><td>${d.intensity_ratio.toFixed(3)}</td><td>${d.edge_pixel_frac.toFixed(3)}</td><td>${d.iou_thin_vs_fd.toFixed(3)} / ${d.iou_thin_vs_fd_scaled.toFixed(3)}</td><td>${f[k].thin.iou.toFixed(3)}</td><td>${d.iou_fd_scaled_vs_target.toFixed(3)}</td></tr>`; }).join("");
+    $("fdtdFigs").innerHTML = ["baseline", "ga", "gdA"].map(k => `<img src="figs/p9_fdtd_${layout}_${k}_opaque.png" alt="${layout} ${k}">`).join("");
+  }
+
+  // ---------- 편집 ----------
+  const mc = $("maskCanvas"); let painting = false, dirty = false;
+  function pos(e) { const r = mc.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / r.width * W), Math.floor((e.clientY - r.top) / r.height * H)]; }
+  function paint(e) {
+    const [px, py] = pos(e), v = mode === "add" ? 1 : 0, r = brush;
+    for (let y = py; y < py + r; y++) for (let x = px; x < px + r; x++) if (x >= 0 && y >= 0 && x < W && y < H && M[y * W + x] !== v) { M[y * W + x] = v; edited++; dirty = true; }
+    if (dirty) { drawBinary(mc, M, Zt); }
+  }
+  mc.addEventListener("mousedown", e => { painting = true; paint(e); e.preventDefault(); });
+  mc.addEventListener("mousemove", e => { if (painting) paint(e); });
+  window.addEventListener("mouseup", () => { if (painting && dirty) { maskName = "custom"; $("maskSel").value = ""; compute(); } painting = false; dirty = false; });
+  mc.addEventListener("contextmenu", e => e.preventDefault());
+  $("modeAdd").onclick = () => { mode = "add"; $("modeAdd").classList.add("on"); $("modeDel").classList.remove("on"); };
+  $("modeDel").onclick = () => { mode = "del"; $("modeDel").classList.add("on"); $("modeAdd").classList.remove("on"); };
+  document.querySelectorAll("[data-b]").forEach(b => b.onclick = () => { brush = +b.dataset.b; document.querySelectorAll("[data-b]").forEach(x => x.classList.toggle("on", x === b)); });
+  $("btnReset").onclick = () => { const v = $("maskSel").value || "baseline"; maskName = v; $("maskSel").value = v; loadMask(); };
+  $("layoutSel").onchange = e => { layout = e.target.value; maskName = $("maskSel").value || "baseline"; loadLayout(); };
+  $("maskSel").onchange = e => { maskName = e.target.value; loadMask(); };
+
+  // ---------- 저장 ----------
+  function dl(name, blob) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+  $("btnJson").onclick = () => {
+    const m = OPC.compare(Z, Zt, cfg.pixel_nm), cl = D.layouts[layout].cutlines;
+    const out = { tool: "OPC simulation tool (coherent scalar + CTR)", layout, mask: maskName, edited_pixels: edited,
+      conditions: { lambda_nm: cfg.lambda_nm, NA: cfg.NA, illumination: "coherent, normal incidence", pixel_nm: cfg.pixel_nm, I_th: cfg.I_th, resist: "positive CTR", pad_px: C.pad_px, boundary: "isolated pattern + zero padding", eval_margin_nm: C.margin_lambda * C.lambda_layout_nm },
+      grid: { H, W }, metrics: m, baseline_metrics: baseMetrics,
+      cutlines: cl.map(c => ({ label: c.label, design_nm: c.design_nm, cd_nm: cd(Z, c), cd_baseline_nm: cd(baseZ, c) })),
+      mask_rle: rle(M), developed_rle: rle(Z), timestamp: new Date().toISOString() };
+    dl(`opc_${layout}_${maskName}.json`, new Blob([JSON.stringify(out, null, 1)], { type: "application/json" }));
+  };
+  function rle(A) { const r = []; let v = A[0], n = 0; for (let i = 0; i < A.length; i++) { if (A[i] === v) n++; else { r.push(n); v = A[i]; n = 1; } } r.push(n); return { first: A[0], runs: r }; }
+  $("btnPng").onclick = () => {
+    const cvs = ["targetCanvas", "maskCanvas", "aerialCanvas", "devCanvas"].map(id => $(id)), gap = 16, pad = 30;
+    const out = document.createElement("canvas"); out.width = cvs.reduce((s, c) => s + c.width, 0) + gap * 3 + pad * 2; out.height = cvs[0].height + pad * 2 + 20;
+    const ctx = out.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height); ctx.fillStyle = "#222"; ctx.font = "13px sans-serif";
+    const titles = ["목표 패턴", `마스크 (${maskName})`, "노광 분포", "현상 vs 목표"]; let x = pad;
+    cvs.forEach((c, i) => { ctx.fillText(titles[i], x, pad - 8); ctx.drawImage(c, x, pad); x += c.width + gap; });
+    const m = OPC.compare(Z, Zt, cfg.pixel_nm);
+    ctx.fillText(`${layout} | λ ${cfg.lambda_nm} nm | NA ${cfg.NA} | I_th ${cfg.I_th.toFixed(4)} | IoU ${m.iou.toFixed(4)} (OPC 전 ${baseMetrics.iou.toFixed(4)}) | 불일치 ${m.mismatch_nm2.toFixed(0)} nm²`, pad, out.height - 10);
+    out.toBlob(b => dl(`opc_${layout}_${maskName}.png`, b));
+  };
+
+  $("condText").textContent = `λ ${cfg.lambda_nm} nm | NA ${cfg.NA} | coherent | 격자 ${cfg.pixel_nm} nm | I_th ${cfg.I_th.toFixed(4)} | positive CTR`;
+  $("ithLab").textContent = cfg.I_th.toFixed(4);
+  loadLayout();
+})();
+</script>
+</body>
+</html>
